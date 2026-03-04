@@ -108,6 +108,7 @@
             const streamRef = useRef(null);
             const transcriptScrollRef = useRef(null);
             const analysisTimerRef = useRef(null); 
+            const lastAnalysisTimeRef = useRef(0);
 
             const getDevices = async () => {
                 try {
@@ -138,10 +139,19 @@
                 if (!isRecording || transcript.length === 0) return;
 
                 if (analysisTimerRef.current) clearTimeout(analysisTimerRef.current);
-                
+
+                // 1. デバウンス: 発言が止まってから10秒後に実行
                 analysisTimerRef.current = setTimeout(() => {
                     performAnalysis(transcript);
-                }, 45000); 
+                    lastAnalysisTimeRef.current = Date.now();
+                }, 10000); 
+                
+                // 2. スロットル: 前回の解析から60秒経過していれば強制実行（議論が続いていても更新）
+                if (Date.now() - lastAnalysisTimeRef.current > 60000) {
+                    if (analysisTimerRef.current) clearTimeout(analysisTimerRef.current);
+                    performAnalysis(transcript);
+                    lastAnalysisTimeRef.current = Date.now();
+                }
 
                 return () => clearTimeout(analysisTimerRef.current);
             }, [transcript, isRecording]);
