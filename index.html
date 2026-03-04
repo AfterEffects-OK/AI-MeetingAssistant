@@ -74,7 +74,8 @@
 *作成日: {{date}}*`;
 
         const App = () => {
-            const apiKey = ""; 
+            // ★★★ここにあなたのGoogle AI StudioのAPIキーを設定してください★★★
+            const apiKey = "AIzaSyDwYjavWa1eLdGxi3clBU-rBaviGzImPms";
 
             const [isRecording, setIsRecording] = useState(false);
             const [transcript, setTranscript] = useState([]);
@@ -157,6 +158,12 @@
             }, [transcript, isRecording]);
 
             const callGemini = async (text) => {
+                if (!apiKey || apiKey === "YOUR_API_KEY_HERE") {
+                    setErrorMessage("APIキーが設定されていません。コードを編集して有効なAPIキーを設定してください。");
+                    setIsAnalyzing(false);
+                    return null;
+                }
+
                 const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
                 const g = genres.find(x => x.id === genre);
                 
@@ -205,6 +212,7 @@ ${template}`;
                     return JSON.parse(data.candidates[0].content.parts[0].text);
                 } catch (e) { 
                     setErrorMessage("AI解析に失敗しました。接続を確認してください。");
+                    console.error("AI Analysis Error:", e);
                     return null; 
                 }
             };
