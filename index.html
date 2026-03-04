@@ -20,6 +20,15 @@
         .level-bar {
             transition: height 0.05s ease-out, background-color 0.2s;
         }
+
+        /* Markdown Basic Styling for Preview */
+        .markdown-preview h1 { font-size: 1.5rem; font-weight: 900; margin-bottom: 1rem; border-bottom: 2px solid #e2e8f0; padding-bottom: 0.5rem; }
+        .markdown-preview h2 { font-size: 1.25rem; font-weight: 800; margin-top: 1.5rem; margin-bottom: 0.75rem; color: #1e293b; }
+        .markdown-preview h3 { font-size: 1.1rem; font-weight: 700; margin-top: 1rem; margin-bottom: 0.5rem; }
+        .markdown-preview ul { list-style-type: disc; padding-left: 1.5rem; margin-bottom: 1rem; }
+        .markdown-preview li { margin-bottom: 0.25rem; }
+        .markdown-preview strong { font-weight: 700; color: #4f46e5; }
+        .markdown-preview blockquote { border-left: 4px solid #e2e8f0; padding-left: 1rem; color: #64748b; font-style: italic; margin: 1rem 0; }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-900 overflow-hidden">
@@ -47,6 +56,23 @@
             return <span ref={iconRef} className="inline-flex items-center justify-center pointer-events-none" style={{ width: size, height: size }}></span>;
         });
 
+        const DEFAULT_TEMPLATE = `# 会議議事録: {{title}}
+
+## 1. 概要
+{{summary}}
+
+## 2. 決定事項
+- ここに決定した内容を記載
+
+## 3. ネクストアクション
+{{actions}}
+
+## 4. 議論の詳細
+{{details}}
+
+---
+*作成日: {{date}}*`;
+
         const App = () => {
             const apiKey = ""; 
 
@@ -63,6 +89,8 @@
             const [audioLevel, setAudioLevel] = useState(0); 
             const [genre, setGenre] = useState('general');
             
+            // テンプレート機能
+            const [template, setTemplate] = useState(localStorage.getItem('meeting_template') || DEFAULT_TEMPLATE);
             const [devices, setDevices] = useState([]);
             const [selectedDeviceId, setSelectedDeviceId] = useState('');
 
@@ -79,7 +107,7 @@
             const animationFrameRef = useRef(null);
             const streamRef = useRef(null);
             const transcriptScrollRef = useRef(null);
-            const analysisTimerRef = useRef(null); // 自動解析用のタイマー
+            const analysisTimerRef = useRef(null); 
 
             const getDevices = async () => {
                 try {
@@ -106,21 +134,14 @@
                 }
             }, [transcript, interimTranscript, activeTab]);
 
-            // 自動解析トリガーの監視
             useEffect(() => {
                 if (!isRecording || transcript.length === 0) return;
 
-                // 最後に発言が追加されてから30秒後、または発言が15件増えるたびに実行
                 if (analysisTimerRef.current) clearTimeout(analysisTimerRef.current);
                 
                 analysisTimerRef.current = setTimeout(() => {
                     performAnalysis(transcript);
-                }, 30000); // 30秒間沈黙があったら解析
-
-                // 発言数が15の倍数になったときに即時解析
-                if (transcript.length % 15 === 0) {
-                    performAnalysis(transcript);
-                }
+                }, 45000); 
 
                 return () => clearTimeout(analysisTimerRef.current);
             }, [transcript, isRecording]);
@@ -128,9 +149,25 @@
             const callGemini = async (text) => {
                 const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
                 const g = genres.find(x => x.id === genre);
-                const systemPrompt = `あなたは「${g.label}」の専門家です。会議ログを解析しJSON形式で出力してください。{title, summary, actions:[], details, mindmap:[{id, text, parentId}]}`;
                 
-                // Exponential Backoff Implementation
+                const systemPrompt = `あなたは「${g.label}」の専門家です。
+会議ログを解析し、以下のJSON形式で厳密に出力してください。
+
+【出力JSON構造】
+{
+  "title": "会議のタイトル",
+  "summary": "簡潔な要約文",
+  "actions": ["タスク1", "タスク2"],
+  "details": "議論の詳細な記録（Markdown形式を推奨）",
+  "mindmap": [{"id": "1", "text": "中心議題", "parentId": null}]
+}
+
+【議事録作成のガイドライン】
+- "details"セクションは、議論の流れがわかるように構造化されたMarkdownで記述してください。
+- 重要な発言や決定事項を強調してください。
+- 以下のテンプレート構成を意識して内容を構成してください：
+${template}`;
+                
                 const fetchWithRetry = async (retries = 5, delay = 1000) => {
                     try {
                         const response = await fetch(url, {
@@ -157,7 +194,7 @@
                     const data = await fetchWithRetry();
                     return JSON.parse(data.candidates[0].content.parts[0].text);
                 } catch (e) { 
-                    setErrorMessage("AI解析に失敗しました。時間をおいて再試行してください。");
+                    setErrorMessage("AI解析に失敗しました。接続を確認してください。");
                     return null; 
                 }
             };
@@ -178,6 +215,58 @@
                     }
                 }
                 setIsAnalyzing(false);
+            };
+
+            const getFormattedMarkdown = () => {
+                let md = template;
+                md = md.replace('{{title}}', minutes.title || '無題の会議');
+                md = md.replace('{{summary}}', minutes.summary || '未生成');
+                md = md.replace('{{actions}}', todoList.map(t => `- [${t.completed ? 'x' : ' '}] ${t.text}`).join('\n') || 'なし');
+                md = md.replace('{{details}}', minutes.details || '未生成');
+                md = md.replace('{{date}}', new Date().toLocaleDateString('ja-JP'));
+                return md;
+            };
+
+            const downloadMinutes = () => {
+                if (transcript.length === 0) {
+                    setErrorMessage("保存する内容がありません。");
+                    return;
+                }
+
+                const now = new Date();
+                const dateStr = now.toLocaleDateString('ja-JP').replace(/\//g, '-');
+                const timeStr = now.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }).replace(':', '');
+                const fileName = `${minutes.title || '議事録'}_${dateStr}_${timeStr}.md`;
+                
+                const mdContent = `
+# 会議記録: ${minutes.title}
+解析日時: ${now.toLocaleString('ja-JP')}
+
+---
+
+${getFormattedMarkdown()}
+
+---
+
+## タイムスタンプ付き発言ログ
+${transcript.map(t => `> **${t.timestamp}**: ${t.text}`).join('\n\n')}
+                `.trim();
+
+                const blob = new Blob([mdContent], { type: 'text/markdown;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = fileName;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
+
+            const saveTemplate = () => {
+                localStorage.setItem('meeting_template', template);
+                setErrorMessage("テンプレートを保存しました。");
+                setTimeout(() => setErrorMessage(null), 2000);
             };
 
             const startVisualizer = (stream) => {
@@ -234,7 +323,7 @@
                                     setTranscript(prev => [...prev, {
                                         id: Math.random(),
                                         text: e.results[i][0].transcript,
-                                        timestamp: new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
+                                        timestamp: new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
                                     }]);
                                 } else { inter += e.results[i][0].transcript; }
                             }
@@ -265,9 +354,9 @@
             return (
                 <div className="flex h-screen bg-slate-50">
                     {errorMessage && (
-                        <div className="fixed top-6 left-1/2 -translate-x-1/2 bg-red-600 text-white px-6 py-3 rounded-xl z-[200] flex items-center gap-3 shadow-2xl animate-in">
-                            <Icon name="alert-circle" /> {errorMessage}
-                            <button onClick={() => setErrorMessage(null)} className="ml-4"><Icon name="x" size={16} /></button>
+                        <div className="fixed top-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-xl z-[200] flex items-center gap-3 shadow-2xl animate-in">
+                            <Icon name="info" className="text-indigo-400" /> {errorMessage}
+                            <button onClick={() => setErrorMessage(null)} className="ml-4 opacity-50"><Icon name="x" size={16} /></button>
                         </div>
                     )}
 
@@ -275,9 +364,9 @@
                         <div className="p-3 bg-indigo-600 rounded-2xl text-white mb-4 shadow-lg shadow-indigo-900/40"><Icon name="brain" size={28} /></div>
                         {[
                             { id: 'transcript', icon: 'message-square', label: '記録' },
+                            { id: 'minutes', icon: 'file-text', label: '議事録' },
                             { id: 'todo', icon: 'list-check', label: 'タスク' },
                             { id: 'mindmap', icon: 'network', label: '構造' },
-                            { id: 'minutes', icon: 'file-text', label: '議事録' },
                         ].map(tab => (
                             <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`p-3 rounded-2xl transition-all flex flex-col items-center gap-1 group ${activeTab === tab.id ? 'bg-indigo-500/20 text-indigo-400' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}>
                                 <Icon name={tab.icon} size={22} />
@@ -297,14 +386,18 @@
                                 {isRecording && (
                                     <div className="flex items-center gap-2 px-3 py-1 bg-red-50 text-red-600 rounded-full border border-red-100 animate-pulse">
                                         <div className="w-2 h-2 bg-red-500 rounded-full" />
-                                        <span className="text-[10px] font-black uppercase">Recording</span>
+                                        <span className="text-[10px] font-black uppercase">Live Recording</span>
                                     </div>
                                 )}
                             </div>
                             <div className="flex items-center gap-4">
+                                <button onClick={downloadMinutes} className="px-4 py-2 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-xl text-xs font-bold flex items-center gap-2 transition-all border border-indigo-200">
+                                    <Icon name="download" size={14} />
+                                    Markdown保存
+                                </button>
                                 <button onClick={() => performAnalysis(transcript)} disabled={isAnalyzing || transcript.length === 0} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl text-xs font-bold flex items-center gap-2 transition-colors disabled:opacity-50">
-                                    <Icon name="refresh-cw" size={14} className={isAnalyzing ? 'animate-spin' : ''} />
-                                    手動解析
+                                    <Icon name="sparkles" size={14} className={isAnalyzing ? 'animate-spin text-indigo-500' : ''} />
+                                    AI解析
                                 </button>
                                 <button onClick={toggleRecording} className={`flex items-center gap-3 px-6 py-2 rounded-xl font-black text-sm transition-all shadow-lg ${isRecording ? 'bg-red-500 text-white shadow-red-200' : 'bg-slate-900 text-white shadow-slate-200 hover:bg-slate-800'}`}>
                                     {isRecording ? <Icon name="square" size={14} /> : <Icon name="mic" size={16} />}
@@ -314,13 +407,13 @@
                         </header>
 
                         <div ref={transcriptScrollRef} className="flex-1 overflow-y-auto p-8 custom-scrollbar bg-slate-50/50">
-                            <div className="max-w-3xl mx-auto">
+                            <div className="max-w-4xl mx-auto">
                                 {activeTab === 'transcript' && (
                                     <div className="space-y-6 pb-20">
                                         {transcript.length === 0 && !interimTranscript && (
                                             <div className="text-center py-20 opacity-20">
                                                 <Icon name="mic" size={64} className="mx-auto mb-4" />
-                                                <p className="font-black text-xl text-slate-900">リアルタイムにテキスト化します</p>
+                                                <p className="font-black text-xl text-slate-900">音声をリアルタイムに文字起こしします</p>
                                             </div>
                                         )}
                                         {transcript.map((t) => (
@@ -336,14 +429,34 @@
                                         )}
                                     </div>
                                 )}
+                                
+                                {activeTab === 'minutes' && (
+                                    <div className="py-6 animate-in">
+                                        <div className="flex items-center justify-between mb-8">
+                                            <h2 className="text-2xl font-black">Markdown 議事録プレビュー</h2>
+                                            <span className="text-[10px] bg-slate-200 px-3 py-1 rounded-full font-bold uppercase">Auto-Generated</span>
+                                        </div>
+                                        <div className="bg-white p-12 rounded-3xl border shadow-sm min-h-[60vh] markdown-preview">
+                                            {minutes.details || minutes.summary ? (
+                                                <div dangerouslySetInnerHTML={{ __html: getFormattedMarkdown().replace(/\n/g, '<br/>') }} />
+                                            ) : (
+                                                <div className="flex flex-col items-center justify-center py-20 text-slate-400 gap-4">
+                                                    <Icon name="file-text" size={48} className="opacity-20" />
+                                                    <p className="font-bold">会議を終了または「AI解析」をクリックすると生成されます</p>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+
                                 {activeTab === 'todo' && (
-                                    <div className="py-6">
+                                    <div className="py-6 animate-in">
                                         <h2 className="text-2xl font-black mb-8 flex items-center gap-3"><Icon name="list-check" className="text-indigo-600" /> Action Items</h2>
                                         <div className="space-y-3">
                                             {todoList.length === 0 && <p className="text-slate-400 font-bold italic">解析後に表示されます</p>}
                                             {todoList.map(todo => (
-                                                <div key={todo.id} className="flex items-center gap-4 p-5 bg-white rounded-2xl border shadow-sm cursor-pointer" onClick={() => setTodoList(prev => prev.map(t => t.id === todo.id ? {...t, completed: !t.completed} : t))}>
-                                                    <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${todo.completed ? 'bg-green-500 border-green-500 text-white' : 'border-slate-200'}`}>
+                                                <div key={todo.id} className="flex items-center gap-4 p-5 bg-white rounded-2xl border shadow-sm cursor-pointer hover:border-indigo-200 transition-all" onClick={() => setTodoList(prev => prev.map(t => t.id === todo.id ? {...t, completed: !t.completed} : t))}>
+                                                    <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors ${todo.completed ? 'bg-green-500 border-green-500 text-white' : 'border-slate-200'}`}>
                                                         {todo.completed && <Icon name="check" size={14} />}
                                                     </div>
                                                     <span className={`font-bold ${todo.completed ? 'line-through text-slate-400' : 'text-slate-700'}`}>{todo.text}</span>
@@ -352,18 +465,11 @@
                                         </div>
                                     </div>
                                 )}
+                                
                                 {activeTab === 'mindmap' && (
-                                    <div className="py-10 flex flex-col items-center">
-                                        <h2 className="text-2xl font-black mb-12">会議構造マップ</h2>
-                                        {minutes.mindmap && minutes.mindmap.length > 0 ? renderNodes(minutes.mindmap) : <p className="text-slate-400 font-bold">会話を解析して可視化します</p>}
-                                    </div>
-                                )}
-                                {activeTab === 'minutes' && (
-                                    <div className="py-6">
-                                        <h2 className="text-2xl font-black mb-8">議事録詳細</h2>
-                                        <div className="bg-white p-10 rounded-3xl border shadow-sm min-h-[60vh]">
-                                            <div className="prose max-w-none whitespace-pre-wrap leading-relaxed text-slate-600 font-medium">{minutes.details || "解析が完了すると、Markdown形式で生成されます。"}</div>
-                                        </div>
+                                    <div className="py-10 flex flex-col items-center animate-in">
+                                        <h2 className="text-2xl font-black mb-12">構造化マップ</h2>
+                                        {minutes.mindmap && minutes.mindmap.length > 0 ? renderNodes(minutes.mindmap) : <p className="text-slate-400 font-bold">会話の流れをビジュアル化します</p>}
                                     </div>
                                 )}
                             </div>
@@ -373,75 +479,75 @@
                             <div className="flex items-center justify-between mb-4">
                                 <div className="flex items-center gap-2 text-indigo-600 font-black text-xs uppercase tracking-widest">
                                     <Icon name="sparkles" size={16} /> 
-                                    AI Realtime Summary 
-                                    {isAnalyzing && <span className="text-[8px] animate-pulse normal-case font-bold px-2 py-0.5 bg-indigo-50 rounded ml-2">Analyzing Context...</span>}
+                                    AI Realtime Summary
+                                    {isAnalyzing && <span className="ml-2 inline-flex h-2 w-2 rounded-full bg-indigo-500 animate-ping"></span>}
                                 </div>
-                                <div className="text-[10px] font-bold text-slate-400 flex items-center gap-2 bg-slate-50 px-3 py-1 rounded-full"><Icon name="clock" size={10} /> {lastUpdateTime ? `最終更新: ${lastUpdateTime.toLocaleTimeString()}` : '未解析'}</div>
+                                <div className="text-[10px] font-bold text-slate-400 flex items-center gap-2 bg-slate-50 px-3 py-1 rounded-full">{lastUpdateTime ? `Updated: ${lastUpdateTime.toLocaleTimeString()}` : 'No Analysis Yet'}</div>
                             </div>
-                            <div className="flex-1 bg-gradient-to-br from-indigo-50/50 to-white rounded-3xl p-8 border border-indigo-100/50 overflow-y-auto custom-scrollbar shadow-inner">
-                                <div className="prose prose-slate max-w-none">
-                                    <p className="text-lg font-bold text-slate-800 leading-loose">
-                                        {minutes.summary || (isRecording ? "会話の文脈を詳細に読み取っています..." : "「会議を開始」ボタンを押してください")}
-                                    </p>
-                                </div>
+                            <div className="flex-1 bg-slate-50 rounded-2xl p-6 border border-slate-100 overflow-y-auto custom-scrollbar">
+                                <p className="text-lg font-bold text-slate-700 leading-relaxed italic">
+                                    {minutes.summary || "会話を始めると、AIが自動的に要約を開始します..."}
+                                </p>
                             </div>
                         </footer>
                     </main>
 
                     {showSettings && (
                         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-6 animate-in fade-in">
-                            <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in-95">
+                            <div className="bg-white rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden animate-in zoom-in-95">
                                 <div className="p-8 border-b flex justify-between items-center bg-slate-50/50">
-                                    <h2 className="text-2xl font-black flex items-center gap-3"><Icon name="settings" className="text-slate-400" /> 設定</h2>
-                                    <button onClick={() => setShowSettings(false)} className="p-2 hover:bg-white rounded-full transition-colors shadow-sm"><Icon name="x" size={24}/></button>
+                                    <h2 className="text-2xl font-black flex items-center gap-3"><Icon name="settings" className="text-slate-400" /> 設定・テンプレート</h2>
+                                    <button onClick={() => setShowSettings(false)} className="p-2 hover:bg-white rounded-full transition-colors shadow-sm text-slate-400 hover:text-slate-900"><Icon name="x" size={24}/></button>
                                 </div>
-                                <div className="p-8 space-y-8 max-h-[70vh] overflow-y-auto custom-scrollbar">
+                                <div className="p-8 space-y-8 max-h-[80vh] overflow-y-auto custom-scrollbar">
+                                    
                                     <section className="space-y-4">
-                                        <div className="p-6 bg-slate-50 rounded-2xl border border-slate-100">
-                                            <div className="flex items-center justify-between mb-4">
-                                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Mic Input Level</label>
-                                                <div className="text-[10px] font-bold px-2 py-0.5 rounded bg-white border border-slate-200 text-slate-600">{isRecording ? 'ACTIVE' : 'STANDBY'}</div>
-                                            </div>
-                                            <div className="flex items-end gap-[2px] h-8 bg-white p-2 rounded-xl border border-slate-100 shadow-inner overflow-hidden mb-6">
-                                                {[...Array(40)].map((_, i) => {
-                                                    const threshold = (i / 40) * 100;
-                                                    const isActive = audioLevel > threshold;
-                                                    const h = isActive ? Math.max(20, (audioLevel - threshold) * 2.5 + 10) : 4;
-                                                    return <div key={i} className={`level-bar flex-1 rounded-full ${isActive ? (audioLevel > 80 ? 'bg-red-400' : 'bg-indigo-500') : 'bg-slate-100'}`} style={{ height: `${Math.min(100, h)}%` }} />;
-                                                })}
-                                            </div>
-                                            
-                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Input Device</label>
+                                        <label className="text-[11px] font-black text-indigo-600 uppercase tracking-widest block">議事録テンプレート（Markdown）</label>
+                                        <p className="text-xs text-slate-500 mb-2">
+                                            AIが以下の変数を自動的に置換して議事録を構成します。<br/>
+                                            <code className="bg-slate-100 px-1 font-bold">{"{{title}}"}</code> 
+                                            <code className="bg-slate-100 px-1 font-bold ml-1">{"{{summary}}"}</code>
+                                            <code className="bg-slate-100 px-1 font-bold ml-1">{"{{actions}}"}</code>
+                                            <code className="bg-slate-100 px-1 font-bold ml-1">{"{{details}}"}</code>
+                                        </p>
+                                        <textarea 
+                                            value={template}
+                                            onChange={(e) => setTemplate(e.target.value)}
+                                            className="w-full h-48 bg-slate-50 border border-slate-200 rounded-2xl p-4 font-mono text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                                            placeholder="Markdown形式でテンプレートを入力..."
+                                        />
+                                        <button onClick={saveTemplate} className="px-4 py-2 bg-indigo-600 text-white text-xs font-bold rounded-xl hover:bg-indigo-700 transition-all flex items-center gap-2">
+                                            <Icon name="save" size={14}/> テンプレートを保存
+                                        </button>
+                                    </section>
+
+                                    <div className="grid grid-cols-2 gap-8">
+                                        <section className="space-y-4">
+                                            <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest block">Audio Device</label>
                                             <select 
                                                 value={selectedDeviceId}
                                                 onChange={(e) => setSelectedDeviceId(e.target.value)}
-                                                disabled={isRecording}
-                                                className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
+                                                className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                             >
-                                                {devices.length === 0 && <option value="">デバイスが見つかりません</option>}
                                                 {devices.map(d => (
-                                                    <option key={d.deviceId} value={d.deviceId}>{d.label || `マイク (${d.deviceId.slice(0, 5)})`}</option>
+                                                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Mic ${d.deviceId.slice(0, 5)}`}</option>
                                                 ))}
                                             </select>
-                                        </div>
-                                    </section>
+                                        </section>
 
-                                    <section>
-                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-4">会議のドメイン（専門用語の最適化）</label>
-                                        <div className="grid grid-cols-2 gap-3">
-                                            {genres.map(g => (
-                                                <button key={g.id} onClick={() => setGenre(g.id)} className={`p-4 rounded-2xl border-2 text-left transition-all ${genre === g.id ? 'border-indigo-600 bg-indigo-50' : 'border-slate-100 hover:border-slate-300'}`}>
-                                                    <div className="flex items-center gap-2 font-bold text-sm mb-1">
-                                                        <Icon name={g.icon} size={14} className={genre === g.id ? 'text-indigo-600' : 'text-slate-400'} />
-                                                        {g.label}
-                                                    </div>
-                                                    <div className="text-[9px] text-slate-400 line-clamp-1 leading-tight">{g.hint}</div>
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </section>
+                                        <section className="space-y-4">
+                                            <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest block">Meeting Genre</label>
+                                            <div className="grid grid-cols-2 gap-2">
+                                                {genres.map(g => (
+                                                    <button key={g.id} onClick={() => setGenre(g.id)} className={`p-3 rounded-xl border text-left transition-all ${genre === g.id ? 'border-indigo-600 bg-indigo-50 font-bold' : 'border-slate-100'}`}>
+                                                        <div className="text-[10px]">{g.label}</div>
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </section>
+                                    </div>
 
-                                    <button onClick={() => setShowSettings(false)} className="w-full py-4 bg-slate-900 text-white font-black rounded-2xl hover:bg-slate-800 transition-colors shadow-xl shadow-slate-300">保存して閉じる</button>
+                                    <button onClick={() => setShowSettings(false)} className="w-full py-4 bg-slate-900 text-white font-black rounded-2xl hover:bg-slate-800 transition-colors shadow-xl">閉じる</button>
                                 </div>
                             </div>
                         </div>
