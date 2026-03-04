@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Realtime Meeting Assistant - Professional</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=Noto+Sans+JP:wght@400;700;900&display=swap');
+        body { font-family: 'Inter', 'Noto Sans JP', sans-serif; }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+        .animate-in { animation: fadeIn 0.3s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
+        .level-bar {
+            transition: height 0.05s ease-out, background-color 0.2s;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900 overflow-hidden">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback, memo } = React;
+
+        const Icon = memo(({ name, size = 20, className = "" }) => {
+            const iconRef = useRef(null);
+            useEffect(() => {
+                if (window.lucide && iconRef.current) {
+                    iconRef.current.innerHTML = '';
+                    const i = document.createElement('i');
+                    i.setAttribute('data-lucide', name);
+                    i.style.width = `${size}px`;
+                    i.style.height = `${size}px`;
+                    if (className) i.className = className;
+                    iconRef.current.appendChild(i);
+                    window.lucide.createIcons({
+                        props: { width: size, height: size, class: className }
+                    });
+                }
+            }, [name, size, className]);
+            return <span ref={iconRef} className="inline-flex items-center justify-center pointer-events-none" style={{ width: size, height: size }}></span>;
+        });
+
+        const App = () => {
+            const apiKey = ""; 
+
+            const [isRecording, setIsRecording] = useState(false);
+            const [transcript, setTranscript] = useState([]);
+            const [interimTranscript, setInterimTranscript] = useState('');
+            const [minutes, setMinutes] = useState({ summary: '', actions: [], details: '', title: '新しい会議', mindmap: [] });
+            const [todoList, setTodoList] = useState([]); 
+            const [activeTab, setActiveTab] = useState('transcript'); 
+            const [isAnalyzing, setIsAnalyzing] = useState(false);
+            const [lastUpdateTime, setLastUpdateTime] = useState(null);
+            const [errorMessage, setErrorMessage] = useState(null);
+            const [showSettings, setShowSettings] = useState(false);
+            const [audioLevel, setAudioLevel] = useState(0); 
+            const [genre, setGenre] = useState('general');
+            
+            const [devices, setDevices] = useState([]);
+            const [selectedDeviceId, setSelectedDeviceId] = useState('');
+
+            const genres = [
+                { id: 'general', label: '一般・日常', icon: 'globe', hint: '標準的な用語を使用します' },
+                { id: 'it', label: 'IT・技術', icon: 'code', hint: '開発用語、フレームワーク等' },
+                { id: 'business', label: 'ビジネス', icon: 'briefcase', hint: '戦略、経営、マーケティング等' },
+                { id: 'medical', label: '医療', icon: 'heart-pulse', hint: '医学用語、臨床等' },
+            ];
+
+            const recognitionRef = useRef(null);
+            const audioContextRef = useRef(null);
+            const analyserRef = useRef(null);
+            const animationFrameRef = useRef(null);
+            const streamRef = useRef(null);
+            const transcriptScrollRef = useRef(null);
+            const analysisTimerRef = useRef(null); // 自動解析用のタイマー
+
+            const getDevices = async () => {
+                try {
+                    const allDevices = await navigator.mediaDevices.enumerateDevices();
+                    const audioIn = allDevices.filter(d => d.kind === 'audioinput');
+                    setDevices(audioIn);
+                    if (audioIn.length > 0 && !selectedDeviceId) {
+                        setSelectedDeviceId(audioIn[0].deviceId);
+                    }
+                } catch (e) {
+                    console.error("Device Enumeration Error:", e);
+                }
+            };
+
+            useEffect(() => {
+                getDevices();
+                navigator.mediaDevices.ondevicechange = getDevices;
+            }, []);
+
+            useEffect(() => {
+                if (activeTab === 'transcript' && transcriptScrollRef.current) {
+                    const container = transcriptScrollRef.current;
+                    container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+                }
+            }, [transcript, interimTranscript, activeTab]);
+
+            // 自動解析トリガーの監視
+            useEffect(() => {
+                if (!isRecording || transcript.length === 0) return;
+
+                // 最後に発言が追加されてから30秒後、または発言が15件増えるたびに実行
+                if (analysisTimerRef.current) clearTimeout(analysisTimerRef.current);
+                
+                analysisTimerRef.current = setTimeout(() => {
+                    performAnalysis(transcript);
+                }, 30000); // 30秒間沈黙があったら解析
+
+                // 発言数が15の倍数になったときに即時解析
+                if (transcript.length % 15 === 0) {
+                    performAnalysis(transcript);
+                }
+
+                return () => clearTimeout(analysisTimerRef.current);
+            }, [transcript, isRecording]);
+
+            const callGemini = async (text) => {
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+                const g = genres.find(x => x.id === genre);
+                const systemPrompt = `あなたは「${g.label}」の専門家です。会議ログを解析しJSON形式で出力してください。{title, summary, actions:[], details, mindmap:[{id, text, parentId}]}`;
+                
+                // Exponential Backoff Implementation
+                const fetchWithRetry = async (retries = 5, delay = 1000) => {
+                    try {
+                        const response = await fetch(url, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                contents: [{ parts: [{ text: `会議ログ:\n${text}` }] }],
+                                systemInstruction: { parts: [{ text: systemPrompt }] },
+                                generationConfig: { responseMimeType: "application/json" }
+                            })
+                        });
+                        if (!response.ok) throw new Error('API Error');
+                        return await response.json();
+                    } catch (e) {
+                        if (retries > 0) {
+                            await new Promise(res => setTimeout(res, delay));
+                            return fetchWithRetry(retries - 1, delay * 2);
+                        }
+                        throw e;
+                    }
+                };
+
+                try {
+                    const data = await fetchWithRetry();
+                    return JSON.parse(data.candidates[0].content.parts[0].text);
+                } catch (e) { 
+                    setErrorMessage("AI解析に失敗しました。時間をおいて再試行してください。");
+                    return null; 
+                }
+            };
+
+            const performAnalysis = async (currentTranscript) => {
+                if (currentTranscript.length === 0 || isAnalyzing) return;
+                setIsAnalyzing(true);
+                const result = await callGemini(currentTranscript.map(t => t.text).join('\n'));
+                if (result) {
+                    setMinutes(result);
+                    setLastUpdateTime(new Date());
+                    if (result.actions) {
+                        setTodoList(result.actions.map(a => ({ 
+                            id: Math.random().toString(36).substr(2, 9), 
+                            text: typeof a === 'string' ? a : (a.task || JSON.stringify(a)), 
+                            completed: false 
+                        })));
+                    }
+                }
+                setIsAnalyzing(false);
+            };
+
+            const startVisualizer = (stream) => {
+                try {
+                    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                    const anal = ctx.createAnalyser();
+                    const src = ctx.createMediaStreamSource(stream);
+                    anal.fftSize = 64;
+                    src.connect(anal);
+                    audioContextRef.current = ctx;
+                    analyserRef.current = anal;
+                    const dataArray = new Uint8Array(anal.frequencyBinCount);
+                    const update = () => {
+                        if (!analyserRef.current) return;
+                        analyserRef.current.getByteFrequencyData(dataArray);
+                        const avg = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                        const level = Math.min(100, (avg / 128) * 100);
+                        setAudioLevel(level);
+                        animationFrameRef.current = requestAnimationFrame(update);
+                    };
+                    update();
+                } catch (e) { console.error(e); }
+            };
+
+            const toggleRecording = async () => {
+                if (isRecording) {
+                    recognitionRef.current?.stop();
+                    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+                    if (audioContextRef.current && audioContextRef.current.state !== 'closed') audioContextRef.current.close();
+                    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+                    audioContextRef.current = null;
+                    analyserRef.current = null;
+                    setAudioLevel(0);
+                    setIsRecording(false);
+                    performAnalysis(transcript);
+                } else {
+                    try {
+                        const constraints = { 
+                            audio: selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : true 
+                        };
+                        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                        streamRef.current = stream;
+                        startVisualizer(stream);
+                        const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+                        if (!Rec) { setErrorMessage("音声認識非対応ブラウザです"); return; }
+                        const rec = new Rec();
+                        rec.continuous = true;
+                        rec.interimResults = true;
+                        rec.lang = 'ja-JP';
+                        rec.onresult = (e) => {
+                            let inter = '';
+                            for (let i = e.resultIndex; i < e.results.length; ++i) {
+                                if (e.results[i].isFinal) {
+                                    setTranscript(prev => [...prev, {
+                                        id: Math.random(),
+                                        text: e.results[i][0].transcript,
+                                        timestamp: new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
+                                    }]);
+                                } else { inter += e.results[i][0].transcript; }
+                            }
+                            setInterimTranscript(inter);
+                        };
+                        rec.start();
+                        recognitionRef.current = rec;
+                        setIsRecording(true);
+                    } catch (err) { setErrorMessage("マイクの使用を許可してください。"); }
+                }
+            };
+
+            const renderNodes = (nodes, parentId = null, depth = 0) => {
+                const children = nodes.filter(n => n.parentId === parentId);
+                if (children.length === 0) return null;
+                return (
+                    <div className={`flex flex-col gap-3 ${depth > 0 ? 'ml-8 border-l-2 border-indigo-100 pl-4 py-1' : 'items-center'}`}>
+                        {children.map(node => (
+                            <div key={node.id} className="w-full max-w-sm">
+                                <div className={`px-4 py-2 rounded-xl shadow-sm border text-sm font-bold ${depth === 0 ? 'bg-indigo-600 text-white' : 'bg-white text-slate-700'}`}>{node.text}</div>
+                                {renderNodes(nodes, node.id, depth + 1)}
+                            </div>
+                        ))}
+                    </div>
+                );
+            };
+
+            return (
+                <div className="flex h-screen bg-slate-50">
+                    {errorMessage && (
+                        <div className="fixed top-6 left-1/2 -translate-x-1/2 bg-red-600 text-white px-6 py-3 rounded-xl z-[200] flex items-center gap-3 shadow-2xl animate-in">
+                            <Icon name="alert-circle" /> {errorMessage}
+                            <button onClick={() => setErrorMessage(null)} className="ml-4"><Icon name="x" size={16} /></button>
+                        </div>
+                    )}
+
+                    <aside className="w-20 bg-slate-900 flex flex-col items-center py-8 gap-6 shrink-0 z-50 shadow-2xl">
+                        <div className="p-3 bg-indigo-600 rounded-2xl text-white mb-4 shadow-lg shadow-indigo-900/40"><Icon name="brain" size={28} /></div>
+                        {[
+                            { id: 'transcript', icon: 'message-square', label: '記録' },
+                            { id: 'todo', icon: 'list-check', label: 'タスク' },
+                            { id: 'mindmap', icon: 'network', label: '構造' },
+                            { id: 'minutes', icon: 'file-text', label: '議事録' },
+                        ].map(tab => (
+                            <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`p-3 rounded-2xl transition-all flex flex-col items-center gap-1 group ${activeTab === tab.id ? 'bg-indigo-500/20 text-indigo-400' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}>
+                                <Icon name={tab.icon} size={22} />
+                                <span className="text-[8px] font-bold uppercase tracking-tighter">{tab.label}</span>
+                            </button>
+                        ))}
+                        <div className="mt-auto space-y-6">
+                            <button onClick={() => { getDevices(); setShowSettings(true); }} className="p-2 text-slate-400 hover:text-white transition-colors"><Icon name="settings" /></button>
+                            <button onClick={() => { if(confirm('データをリセットしますか？')) window.location.reload(); }} className="p-2 text-slate-400 hover:text-red-400 transition-colors"><Icon name="trash-2" /></button>
+                        </div>
+                    </aside>
+
+                    <main className="flex-1 flex flex-col overflow-hidden relative">
+                        <header className="h-16 bg-white/80 backdrop-blur-md border-b px-8 flex items-center justify-between shrink-0 z-40">
+                            <div className="flex items-center gap-4">
+                                <h1 className="font-black text-xl text-slate-800">{minutes.title}</h1>
+                                {isRecording && (
+                                    <div className="flex items-center gap-2 px-3 py-1 bg-red-50 text-red-600 rounded-full border border-red-100 animate-pulse">
+                                        <div className="w-2 h-2 bg-red-500 rounded-full" />
+                                        <span className="text-[10px] font-black uppercase">Recording</span>
+                                    </div>
+                                )}
+                            </div>
+                            <div className="flex items-center gap-4">
+                                <button onClick={() => performAnalysis(transcript)} disabled={isAnalyzing || transcript.length === 0} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl text-xs font-bold flex items-center gap-2 transition-colors disabled:opacity-50">
+                                    <Icon name="refresh-cw" size={14} className={isAnalyzing ? 'animate-spin' : ''} />
+                                    手動解析
+                                </button>
+                                <button onClick={toggleRecording} className={`flex items-center gap-3 px-6 py-2 rounded-xl font-black text-sm transition-all shadow-lg ${isRecording ? 'bg-red-500 text-white shadow-red-200' : 'bg-slate-900 text-white shadow-slate-200 hover:bg-slate-800'}`}>
+                                    {isRecording ? <Icon name="square" size={14} /> : <Icon name="mic" size={16} />}
+                                    {isRecording ? '会議を終了' : '会議を開始'}
+                                </button>
+                            </div>
+                        </header>
+
+                        <div ref={transcriptScrollRef} className="flex-1 overflow-y-auto p-8 custom-scrollbar bg-slate-50/50">
+                            <div className="max-w-3xl mx-auto">
+                                {activeTab === 'transcript' && (
+                                    <div className="space-y-6 pb-20">
+                                        {transcript.length === 0 && !interimTranscript && (
+                                            <div className="text-center py-20 opacity-20">
+                                                <Icon name="mic" size={64} className="mx-auto mb-4" />
+                                                <p className="font-black text-xl text-slate-900">リアルタイムにテキスト化します</p>
+                                            </div>
+                                        )}
+                                        {transcript.map((t) => (
+                                            <div key={t.id} className="flex gap-4 animate-in">
+                                                <span className="text-[10px] font-mono text-slate-300 mt-1.5 shrink-0">{t.timestamp}</span>
+                                                <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex-1 text-slate-700 leading-relaxed font-medium">{t.text}</div>
+                                            </div>
+                                        ))}
+                                        {interimTranscript && (
+                                            <div className="flex gap-4 opacity-50 ml-14">
+                                                <div className="bg-indigo-50 p-4 rounded-2xl border border-indigo-100 flex-1 text-indigo-400 italic">{interimTranscript}</div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                                {activeTab === 'todo' && (
+                                    <div className="py-6">
+                                        <h2 className="text-2xl font-black mb-8 flex items-center gap-3"><Icon name="list-check" className="text-indigo-600" /> Action Items</h2>
+                                        <div className="space-y-3">
+                                            {todoList.length === 0 && <p className="text-slate-400 font-bold italic">解析後に表示されます</p>}
+                                            {todoList.map(todo => (
+                                                <div key={todo.id} className="flex items-center gap-4 p-5 bg-white rounded-2xl border shadow-sm cursor-pointer" onClick={() => setTodoList(prev => prev.map(t => t.id === todo.id ? {...t, completed: !t.completed} : t))}>
+                                                    <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${todo.completed ? 'bg-green-500 border-green-500 text-white' : 'border-slate-200'}`}>
+                                                        {todo.completed && <Icon name="check" size={14} />}
+                                                    </div>
+                                                    <span className={`font-bold ${todo.completed ? 'line-through text-slate-400' : 'text-slate-700'}`}>{todo.text}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                {activeTab === 'mindmap' && (
+                                    <div className="py-10 flex flex-col items-center">
+                                        <h2 className="text-2xl font-black mb-12">会議構造マップ</h2>
+                                        {minutes.mindmap && minutes.mindmap.length > 0 ? renderNodes(minutes.mindmap) : <p className="text-slate-400 font-bold">会話を解析して可視化します</p>}
+                                    </div>
+                                )}
+                                {activeTab === 'minutes' && (
+                                    <div className="py-6">
+                                        <h2 className="text-2xl font-black mb-8">議事録詳細</h2>
+                                        <div className="bg-white p-10 rounded-3xl border shadow-sm min-h-[60vh]">
+                                            <div className="prose max-w-none whitespace-pre-wrap leading-relaxed text-slate-600 font-medium">{minutes.details || "解析が完了すると、Markdown形式で生成されます。"}</div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        <footer className="h-[30rem] bg-white border-t p-6 flex flex-col shadow-[0_-20px_40px_rgba(0,0,0,0.04)] z-40 transition-all duration-300 shrink-0">
+                            <div className="flex items-center justify-between mb-4">
+                                <div className="flex items-center gap-2 text-indigo-600 font-black text-xs uppercase tracking-widest">
+                                    <Icon name="sparkles" size={16} /> 
+                                    AI Realtime Summary 
+                                    {isAnalyzing && <span className="text-[8px] animate-pulse normal-case font-bold px-2 py-0.5 bg-indigo-50 rounded ml-2">Analyzing Context...</span>}
+                                </div>
+                                <div className="text-[10px] font-bold text-slate-400 flex items-center gap-2 bg-slate-50 px-3 py-1 rounded-full"><Icon name="clock" size={10} /> {lastUpdateTime ? `最終更新: ${lastUpdateTime.toLocaleTimeString()}` : '未解析'}</div>
+                            </div>
+                            <div className="flex-1 bg-gradient-to-br from-indigo-50/50 to-white rounded-3xl p-8 border border-indigo-100/50 overflow-y-auto custom-scrollbar shadow-inner">
+                                <div className="prose prose-slate max-w-none">
+                                    <p className="text-lg font-bold text-slate-800 leading-loose">
+                                        {minutes.summary || (isRecording ? "会話の文脈を詳細に読み取っています..." : "「会議を開始」ボタンを押してください")}
+                                    </p>
+                                </div>
+                            </div>
+                        </footer>
+                    </main>
+
+                    {showSettings && (
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-6 animate-in fade-in">
+                            <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in-95">
+                                <div className="p-8 border-b flex justify-between items-center bg-slate-50/50">
+                                    <h2 className="text-2xl font-black flex items-center gap-3"><Icon name="settings" className="text-slate-400" /> 設定</h2>
+                                    <button onClick={() => setShowSettings(false)} className="p-2 hover:bg-white rounded-full transition-colors shadow-sm"><Icon name="x" size={24}/></button>
+                                </div>
+                                <div className="p-8 space-y-8 max-h-[70vh] overflow-y-auto custom-scrollbar">
+                                    <section className="space-y-4">
+                                        <div className="p-6 bg-slate-50 rounded-2xl border border-slate-100">
+                                            <div className="flex items-center justify-between mb-4">
+                                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Mic Input Level</label>
+                                                <div className="text-[10px] font-bold px-2 py-0.5 rounded bg-white border border-slate-200 text-slate-600">{isRecording ? 'ACTIVE' : 'STANDBY'}</div>
+                                            </div>
+                                            <div className="flex items-end gap-[2px] h-8 bg-white p-2 rounded-xl border border-slate-100 shadow-inner overflow-hidden mb-6">
+                                                {[...Array(40)].map((_, i) => {
+                                                    const threshold = (i / 40) * 100;
+                                                    const isActive = audioLevel > threshold;
+                                                    const h = isActive ? Math.max(20, (audioLevel - threshold) * 2.5 + 10) : 4;
+                                                    return <div key={i} className={`level-bar flex-1 rounded-full ${isActive ? (audioLevel > 80 ? 'bg-red-400' : 'bg-indigo-500') : 'bg-slate-100'}`} style={{ height: `${Math.min(100, h)}%` }} />;
+                                                })}
+                                            </div>
+                                            
+                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Input Device</label>
+                                            <select 
+                                                value={selectedDeviceId}
+                                                onChange={(e) => setSelectedDeviceId(e.target.value)}
+                                                disabled={isRecording}
+                                                className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
+                                            >
+                                                {devices.length === 0 && <option value="">デバイスが見つかりません</option>}
+                                                {devices.map(d => (
+                                                    <option key={d.deviceId} value={d.deviceId}>{d.label || `マイク (${d.deviceId.slice(0, 5)})`}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </section>
+
+                                    <section>
+                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-4">会議のドメイン（専門用語の最適化）</label>
+                                        <div className="grid grid-cols-2 gap-3">
+                                            {genres.map(g => (
+                                                <button key={g.id} onClick={() => setGenre(g.id)} className={`p-4 rounded-2xl border-2 text-left transition-all ${genre === g.id ? 'border-indigo-600 bg-indigo-50' : 'border-slate-100 hover:border-slate-300'}`}>
+                                                    <div className="flex items-center gap-2 font-bold text-sm mb-1">
+                                                        <Icon name={g.icon} size={14} className={genre === g.id ? 'text-indigo-600' : 'text-slate-400'} />
+                                                        {g.label}
+                                                    </div>
+                                                    <div className="text-[9px] text-slate-400 line-clamp-1 leading-tight">{g.hint}</div>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </section>
+
+                                    <button onClick={() => setShowSettings(false)} className="w-full py-4 bg-slate-900 text-white font-black rounded-2xl hover:bg-slate-800 transition-colors shadow-xl shadow-slate-300">保存して閉じる</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
