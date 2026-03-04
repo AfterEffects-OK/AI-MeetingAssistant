@@ -147,8 +147,8 @@
                     lastAnalysisTimeRef.current = Date.now();
                 }, 10000); 
                 
-                // 2. スロットル: 前回の解析から60秒経過していれば強制実行（議論が続いていても更新）
-                if (Date.now() - lastAnalysisTimeRef.current > 60000) {
+                // 2. スロットル: 前回の解析から360秒経過していれば強制実行（議論が続いていても更新）
+                if (Date.now() - lastAnalysisTimeRef.current > 360000) {
                     if (analysisTimerRef.current) clearTimeout(analysisTimerRef.current);
                     performAnalysis(transcript);
                     lastAnalysisTimeRef.current = Date.now();
