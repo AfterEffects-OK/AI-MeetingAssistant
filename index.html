@@ -158,7 +158,7 @@
             }, [transcript, isRecording]);
 
             const callGemini = async (text) => {
-                if (!apiKey || apiKey === "AIzaSyByKb_vM5Qkqz0YHDrAh-44KawdZEo_-Zs") {
+                if (!apiKey || apiKey === "YOUR_API_KEY_HERE") {
                     setErrorMessage("APIキーが設定されていません。コードを編集して有効なAPIキーを設定してください。");
                     setIsAnalyzing(false);
                     return null;
