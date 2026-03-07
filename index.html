@@ -3,589 +3,314 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Realtime Meeting Assistant - Professional</title>
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <title>AI Minutes Pro</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=Noto+Sans+JP:wght@400;700;900&display=swap');
-        body { font-family: 'Inter', 'Noto Sans JP', sans-serif; }
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
-        .animate-in { animation: fadeIn 0.3s ease-out; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        
-        .level-bar {
-            transition: height 0.05s ease-out, background-color 0.2s;
-        }
-
-        /* Markdown Basic Styling for Preview */
-        .markdown-preview h1 { font-size: 1.5rem; font-weight: 900; margin-bottom: 1rem; border-bottom: 2px solid #e2e8f0; padding-bottom: 0.5rem; }
-        .markdown-preview h2 { font-size: 1.25rem; font-weight: 800; margin-top: 1.5rem; margin-bottom: 0.75rem; color: #1e293b; }
-        .markdown-preview h3 { font-size: 1.1rem; font-weight: 700; margin-top: 1rem; margin-bottom: 0.5rem; }
-        .markdown-preview ul { list-style-type: disc; padding-left: 1.5rem; margin-bottom: 1rem; }
-        .markdown-preview li { margin-bottom: 0.25rem; }
-        .markdown-preview strong { font-weight: 700; color: #4f46e5; }
-        .markdown-preview blockquote { border-left: 4px solid #e2e8f0; padding-left: 1rem; color: #64748b; font-style: italic; margin: 1rem 0; }
-    </style>
+    <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
-<body class="bg-slate-50 text-slate-900 overflow-hidden">
-    <div id="root"></div>
-
-    <script type="text/babel">
-        const { useState, useEffect, useRef, useCallback, memo } = React;
-
-        const Icon = memo(({ name, size = 20, className = "" }) => {
-            const iconRef = useRef(null);
-            useEffect(() => {
-                if (window.lucide && iconRef.current) {
-                    iconRef.current.innerHTML = '';
-                    const i = document.createElement('i');
-                    i.setAttribute('data-lucide', name);
-                    i.style.width = `${size}px`;
-                    i.style.height = `${size}px`;
-                    if (className) i.className = className;
-                    iconRef.current.appendChild(i);
-                    window.lucide.createIcons({
-                        props: { width: size, height: size, class: className }
-                    });
-                }
-            }, [name, size, className]);
-            return <span ref={iconRef} className="inline-flex items-center justify-center pointer-events-none" style={{ width: size, height: size }}></span>;
-        });
-
-        const DEFAULT_TEMPLATE = `# 会議議事録: {{title}}
-
-## 1. 概要
-{{summary}}
-
-## 2. 決定事項
-- ここに決定した内容を記載
-
-## 3. ネクストアクション
-{{actions}}
-
-## 4. 議論の詳細
-{{details}}
-
----
-*作成日: {{date}}*`;
-
-        const App = () => {
-            // ★★★ここにあなたのGoogle AI StudioのAPIキーを設定してください★★★
-            const apiKey = "AIzaSyA19592FTLqwGK-aKUnLkAGgLuggRSNZEs";
-
-            const [isRecording, setIsRecording] = useState(false);
-            const [transcript, setTranscript] = useState([]);
-            const [interimTranscript, setInterimTranscript] = useState('');
-            const [minutes, setMinutes] = useState({ summary: '', actions: [], details: '', title: '新しい会議', mindmap: [] });
-            const [todoList, setTodoList] = useState([]); 
-            const [activeTab, setActiveTab] = useState('transcript'); 
-            const [isAnalyzing, setIsAnalyzing] = useState(false);
-            const [lastUpdateTime, setLastUpdateTime] = useState(null);
-            const [errorMessage, setErrorMessage] = useState(null);
-            const [showSettings, setShowSettings] = useState(false);
-            const [audioLevel, setAudioLevel] = useState(0); 
-            const [genre, setGenre] = useState('general');
-            
-            // テンプレート機能
-            const [template, setTemplate] = useState(localStorage.getItem('meeting_template') || DEFAULT_TEMPLATE);
-            const [devices, setDevices] = useState([]);
-            const [selectedDeviceId, setSelectedDeviceId] = useState('');
-
-            const genres = [
-                { id: 'general', label: '一般・日常', icon: 'globe', hint: '標準的な用語を使用します' },
-                { id: 'it', label: 'IT・技術', icon: 'code', hint: '開発用語、フレームワーク等' },
-                { id: 'business', label: 'ビジネス', icon: 'briefcase', hint: '戦略、経営、マーケティング等' },
-                { id: 'medical', label: '医療', icon: 'heart-pulse', hint: '医学用語、臨床等' },
-            ];
-
-            const recognitionRef = useRef(null);
-            const audioContextRef = useRef(null);
-            const analyserRef = useRef(null);
-            const animationFrameRef = useRef(null);
-            const streamRef = useRef(null);
-            const transcriptScrollRef = useRef(null);
-            const analysisTimerRef = useRef(null); 
-            const lastAnalysisTimeRef = useRef(0);
-
-            const getDevices = async () => {
-                try {
-                    const allDevices = await navigator.mediaDevices.enumerateDevices();
-                    const audioIn = allDevices.filter(d => d.kind === 'audioinput');
-                    setDevices(audioIn);
-                    if (audioIn.length > 0 && !selectedDeviceId) {
-                        setSelectedDeviceId(audioIn[0].deviceId);
-                    }
-                } catch (e) {
-                    console.error("Device Enumeration Error:", e);
-                }
-            };
-
-            useEffect(() => {
-                getDevices();
-                navigator.mediaDevices.ondevicechange = getDevices;
-            }, []);
-
-            useEffect(() => {
-                if (activeTab === 'transcript' && transcriptScrollRef.current) {
-                    const container = transcriptScrollRef.current;
-                    container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
-                }
-            }, [transcript, interimTranscript, activeTab]);
-
-            useEffect(() => {
-                if (!isRecording || transcript.length === 0) return;
-
-                if (analysisTimerRef.current) clearTimeout(analysisTimerRef.current);
-
-                // 1. デバウンス: 発言が止まってから10秒後に実行
-                analysisTimerRef.current = setTimeout(() => {
-                    performAnalysis(transcript);
-                    lastAnalysisTimeRef.current = Date.now();
-                }, 10000); 
-                
-                // 2. スロットル: 前回の解析から360秒経過していれば強制実行（議論が続いていても更新）
-                if (Date.now() - lastAnalysisTimeRef.current > 360000) {
-                    if (analysisTimerRef.current) clearTimeout(analysisTimerRef.current);
-                    performAnalysis(transcript);
-                    lastAnalysisTimeRef.current = Date.now();
-                }
-
-                return () => clearTimeout(analysisTimerRef.current);
-            }, [transcript, isRecording]);
-
-            const callGemini = async (text) => {
-                if (!apiKey || apiKey === "YOUR_API_KEY_HERE") {
-                    setErrorMessage("APIキーが設定されていません。コードを編集して有効なAPIキーを設定してください。");
-                    setIsAnalyzing(false);
-                    return null;
-                }
-
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`;
-                const g = genres.find(x => x.id === genre);
-                
-                const systemPrompt = `あなたは「${g.label}」の専門家です。
-会議ログを解析し、以下のJSON形式で厳密に出力してください。
-
-【出力JSON構造】
-{
-  "title": "会議のタイトル",
-  "summary": "簡潔な要約文",
-  "actions": ["タスク1", "タスク2"],
-  "details": "議論の詳細な記録（Markdown形式を推奨）",
-  "mindmap": [{"id": "1", "text": "中心議題", "parentId": null}]
-}
-
-【議事録作成のガイドライン】
-- "details"セクションは、議論の流れがわかるように構造化されたMarkdownで記述してください。
-- 重要な発言や決定事項を強調してください。
-- 以下のテンプレート構成を意識して内容を構成してください：
-${template}`;
-                
-                const fetchWithRetry = async (retries = 5, delay = 1000) => {
-                    try {
-                        const response = await fetch(url, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                contents: [{ parts: [{ text: `会議ログ:\n${text}` }] }],
-                                systemInstruction: { parts: [{ text: systemPrompt }] },
-                                generationConfig: { responseMimeType: "application/json" }
-                            })
-                        });
-                        if (!response.ok) {
-                            let errorData = { message: `HTTP error! status: ${response.status}` };
-                            try {
-                                // Google APIのエラーは通常この形式で返されます
-                                const errorJson = await response.json();
-                                errorData.message = errorJson.error?.message || JSON.stringify(errorJson);
-                            } catch (e) {
-                                // エラーレスポンスがJSON形式でない場合は無視
-                            }
-                            throw new Error(errorData.message);
-                        }
-                        return await response.json();
-                    } catch (e) {
-                        if (retries > 0) {
-                            await new Promise(res => setTimeout(res, delay));
-                            return fetchWithRetry(retries - 1, delay * 2);
-                        }
-                        throw e;
-                    }
-                };
-
-                try {
-                    const data = await fetchWithRetry();
-                    return JSON.parse(data.candidates[0].content.parts[0].text);
-                } catch (e) { 
-                    setErrorMessage(`AI解析エラー: ${e.message}`);
-                    console.error("AI Analysis Error:", e);
-                    return null; 
-                }
-            };
-
-            const performAnalysis = async (currentTranscript) => {
-                if (currentTranscript.length === 0 || isAnalyzing) return;
-                setIsAnalyzing(true);
-                const result = await callGemini(currentTranscript.map(t => t.text).join('\n'));
-                if (result) {
-                    setMinutes(result);
-                    setLastUpdateTime(new Date());
-                    if (result.actions) {
-                        setTodoList(result.actions.map(a => ({ 
-                            id: Math.random().toString(36).substr(2, 9), 
-                            text: typeof a === 'string' ? a : (a.task || JSON.stringify(a)), 
-                            completed: false 
-                        })));
-                    }
-                }
-                setIsAnalyzing(false);
-            };
-
-            const getFormattedMarkdown = () => {
-                let md = template;
-                md = md.replace('{{title}}', minutes.title || '無題の会議');
-                md = md.replace('{{summary}}', minutes.summary || '未生成');
-                md = md.replace('{{actions}}', todoList.map(t => `- [${t.completed ? 'x' : ' '}] ${t.text}`).join('\n') || 'なし');
-                md = md.replace('{{details}}', minutes.details || '未生成');
-                md = md.replace('{{date}}', new Date().toLocaleDateString('ja-JP'));
-                return md;
-            };
-
-            const downloadMinutes = () => {
-                if (transcript.length === 0) {
-                    setErrorMessage("保存する内容がありません。");
-                    return;
-                }
-
-                const now = new Date();
-                const dateStr = now.toLocaleDateString('ja-JP').replace(/\//g, '-');
-                const timeStr = now.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }).replace(':', '');
-                const fileName = `${minutes.title || '議事録'}_${dateStr}_${timeStr}.md`;
-                
-                const mdContent = `
-# 会議記録: ${minutes.title}
-解析日時: ${now.toLocaleString('ja-JP')}
-
----
-
-${getFormattedMarkdown()}
-
----
-
-## タイムスタンプ付き発言ログ
-${transcript.map(t => `> **${t.timestamp}**: ${t.text}`).join('\n\n')}
-                `.trim();
-
-                const blob = new Blob([mdContent], { type: 'text/markdown;charset=utf-8' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = fileName;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-            };
-
-            const saveTemplate = () => {
-                localStorage.setItem('meeting_template', template);
-                setErrorMessage("テンプレートを保存しました。");
-                setTimeout(() => setErrorMessage(null), 2000);
-            };
-
-            const startVisualizer = (stream) => {
-                try {
-                    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-                    const anal = ctx.createAnalyser();
-                    const src = ctx.createMediaStreamSource(stream);
-                    anal.fftSize = 64;
-                    src.connect(anal);
-                    audioContextRef.current = ctx;
-                    analyserRef.current = anal;
-                    const dataArray = new Uint8Array(anal.frequencyBinCount);
-                    const update = () => {
-                        if (!analyserRef.current) return;
-                        analyserRef.current.getByteFrequencyData(dataArray);
-                        const avg = dataArray.reduce((a, b) => a + b) / dataArray.length;
-                        const level = Math.min(100, (avg / 128) * 100);
-                        setAudioLevel(level);
-                        animationFrameRef.current = requestAnimationFrame(update);
-                    };
-                    update();
-                } catch (e) { console.error(e); }
-            };
-
-            const toggleRecording = async () => {
-                if (isRecording) {
-                    recognitionRef.current?.stop();
-                    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
-                    if (audioContextRef.current && audioContextRef.current.state !== 'closed') audioContextRef.current.close();
-                    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-                    audioContextRef.current = null;
-                    analyserRef.current = null;
-                    setAudioLevel(0);
-                    setIsRecording(false);
-                    performAnalysis(transcript);
-                } else {
-                    try {
-                        const constraints = { 
-                            audio: selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : true 
-                        };
-                        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-                        streamRef.current = stream;
-                        startVisualizer(stream);
-                        const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
-                        if (!Rec) { setErrorMessage("音声認識非対応ブラウザです"); return; }
-                        const rec = new Rec();
-                        rec.continuous = true;
-                        rec.interimResults = true;
-                        rec.lang = 'ja-JP';
-                        rec.onresult = (e) => {
-                            let inter = '';
-                            for (let i = e.resultIndex; i < e.results.length; ++i) {
-                                if (e.results[i].isFinal) {
-                                    setTranscript(prev => [...prev, {
-                                        id: Math.random(),
-                                        text: e.results[i][0].transcript,
-                                        timestamp: new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-                                    }]);
-                                } else { inter += e.results[i][0].transcript; }
-                            }
-                            setInterimTranscript(inter);
-                        };
-                        rec.start();
-                        recognitionRef.current = rec;
-                        setIsRecording(true);
-                    } catch (err) { setErrorMessage("マイクの使用を許可してください。"); }
-                }
-            };
-
-            const renderNodes = (nodes, parentId = null, depth = 0) => {
-                const children = nodes.filter(n => n.parentId === parentId);
-                if (children.length === 0) return null;
-                return (
-                    <div className={`flex flex-col gap-3 ${depth > 0 ? 'ml-8 border-l-2 border-indigo-100 pl-4 py-1' : 'items-center'}`}>
-                        {children.map(node => (
-                            <div key={node.id} className="w-full max-w-sm">
-                                <div className={`px-4 py-2 rounded-xl shadow-sm border text-sm font-bold ${depth === 0 ? 'bg-indigo-600 text-white' : 'bg-white text-slate-700'}`}>{node.text}</div>
-                                {renderNodes(nodes, node.id, depth + 1)}
-                            </div>
-                        ))}
-                    </div>
-                );
-            };
-
-            return (
-                <div className="flex h-screen bg-slate-50">
-                    {errorMessage && (
-                        <div className="fixed top-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-xl z-[200] flex items-center gap-3 shadow-2xl animate-in">
-                            <Icon name="info" className="text-indigo-400" /> {errorMessage}
-                            <button onClick={() => setErrorMessage(null)} className="ml-4 opacity-50"><Icon name="x" size={16} /></button>
-                        </div>
-                    )}
-
-                    <aside className="w-20 bg-slate-900 flex flex-col items-center py-8 gap-6 shrink-0 z-50 shadow-2xl">
-                        <div className="p-3 bg-indigo-600 rounded-2xl text-white mb-4 shadow-lg shadow-indigo-900/40"><Icon name="brain" size={28} /></div>
-                        {[
-                            { id: 'transcript', icon: 'message-square', label: '記録' },
-                            { id: 'minutes', icon: 'file-text', label: '議事録' },
-                            { id: 'todo', icon: 'list-check', label: 'タスク' },
-                            { id: 'mindmap', icon: 'network', label: '構造' },
-                        ].map(tab => (
-                            <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`p-3 rounded-2xl transition-all flex flex-col items-center gap-1 group ${activeTab === tab.id ? 'bg-indigo-500/20 text-indigo-400' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}>
-                                <Icon name={tab.icon} size={22} />
-                                <span className="text-[8px] font-bold uppercase tracking-tighter">{tab.label}</span>
-                            </button>
-                        ))}
-                        <div className="mt-auto space-y-6">
-                            <button onClick={() => { getDevices(); setShowSettings(true); }} className="p-2 text-slate-400 hover:text-white transition-colors"><Icon name="settings" /></button>
-                            <button onClick={() => { if(confirm('データをリセットしますか？')) window.location.reload(); }} className="p-2 text-slate-400 hover:text-red-400 transition-colors"><Icon name="trash-2" /></button>
-                        </div>
-                    </aside>
-
-                    <main className="flex-1 flex flex-col overflow-hidden relative">
-                        <header className="h-16 bg-white/80 backdrop-blur-md border-b px-8 flex items-center justify-between shrink-0 z-40">
-                            <div className="flex items-center gap-4">
-                                <h1 className="font-black text-xl text-slate-800">{minutes.title}</h1>
-                                {isRecording && (
-                                    <div className="flex items-center gap-2 px-3 py-1 bg-red-50 text-red-600 rounded-full border border-red-100 animate-pulse">
-                                        <div className="w-2 h-2 bg-red-500 rounded-full" />
-                                        <span className="text-[10px] font-black uppercase">Live Recording</span>
-                                    </div>
-                                )}
-                            </div>
-                            <div className="flex items-center gap-4">
-                                <button onClick={downloadMinutes} className="px-4 py-2 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-xl text-xs font-bold flex items-center gap-2 transition-all border border-indigo-200">
-                                    <Icon name="download" size={14} />
-                                    Markdown保存
-                                </button>
-                                <button onClick={() => performAnalysis(transcript)} disabled={isAnalyzing || transcript.length === 0} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl text-xs font-bold flex items-center gap-2 transition-colors disabled:opacity-50">
-                                    <Icon name="sparkles" size={14} className={isAnalyzing ? 'animate-spin text-indigo-500' : ''} />
-                                    AI解析
-                                </button>
-                                <button onClick={toggleRecording} className={`flex items-center gap-3 px-6 py-2 rounded-xl font-black text-sm transition-all shadow-lg ${isRecording ? 'bg-red-500 text-white shadow-red-200' : 'bg-slate-900 text-white shadow-slate-200 hover:bg-slate-800'}`}>
-                                    {isRecording ? <Icon name="square" size={14} /> : <Icon name="mic" size={16} />}
-                                    {isRecording ? '会議を終了' : '会議を開始'}
-                                </button>
-                            </div>
-                        </header>
-
-                        <div ref={transcriptScrollRef} className="flex-1 overflow-y-auto p-8 custom-scrollbar bg-slate-50/50">
-                            <div className="max-w-4xl mx-auto">
-                                {activeTab === 'transcript' && (
-                                    <div className="space-y-6 pb-20">
-                                        {transcript.length === 0 && !interimTranscript && (
-                                            <div className="text-center py-20 opacity-20">
-                                                <Icon name="mic" size={64} className="mx-auto mb-4" />
-                                                <p className="font-black text-xl text-slate-900">音声をリアルタイムに文字起こしします</p>
-                                            </div>
-                                        )}
-                                        {transcript.map((t) => (
-                                            <div key={t.id} className="flex gap-4 animate-in">
-                                                <span className="text-[10px] font-mono text-slate-300 mt-1.5 shrink-0">{t.timestamp}</span>
-                                                <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex-1 text-slate-700 leading-relaxed font-medium">{t.text}</div>
-                                            </div>
-                                        ))}
-                                        {interimTranscript && (
-                                            <div className="flex gap-4 opacity-50 ml-14">
-                                                <div className="bg-indigo-50 p-4 rounded-2xl border border-indigo-100 flex-1 text-indigo-400 italic">{interimTranscript}</div>
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-                                
-                                {activeTab === 'minutes' && (
-                                    <div className="py-6 animate-in">
-                                        <div className="flex items-center justify-between mb-8">
-                                            <h2 className="text-2xl font-black">Markdown 議事録プレビュー</h2>
-                                            <span className="text-[10px] bg-slate-200 px-3 py-1 rounded-full font-bold uppercase">Auto-Generated</span>
-                                        </div>
-                                        <div className="bg-white p-12 rounded-3xl border shadow-sm min-h-[60vh] markdown-preview">
-                                            {minutes.details || minutes.summary ? (
-                                                <div dangerouslySetInnerHTML={{ __html: getFormattedMarkdown().replace(/\n/g, '<br/>') }} />
-                                            ) : (
-                                                <div className="flex flex-col items-center justify-center py-20 text-slate-400 gap-4">
-                                                    <Icon name="file-text" size={48} className="opacity-20" />
-                                                    <p className="font-bold">会議を終了または「AI解析」をクリックすると生成されます</p>
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-                                )}
-
-                                {activeTab === 'todo' && (
-                                    <div className="py-6 animate-in">
-                                        <h2 className="text-2xl font-black mb-8 flex items-center gap-3"><Icon name="list-check" className="text-indigo-600" /> Action Items</h2>
-                                        <div className="space-y-3">
-                                            {todoList.length === 0 && <p className="text-slate-400 font-bold italic">解析後に表示されます</p>}
-                                            {todoList.map(todo => (
-                                                <div key={todo.id} className="flex items-center gap-4 p-5 bg-white rounded-2xl border shadow-sm cursor-pointer hover:border-indigo-200 transition-all" onClick={() => setTodoList(prev => prev.map(t => t.id === todo.id ? {...t, completed: !t.completed} : t))}>
-                                                    <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors ${todo.completed ? 'bg-green-500 border-green-500 text-white' : 'border-slate-200'}`}>
-                                                        {todo.completed && <Icon name="check" size={14} />}
-                                                    </div>
-                                                    <span className={`font-bold ${todo.completed ? 'line-through text-slate-400' : 'text-slate-700'}`}>{todo.text}</span>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-                                
-                                {activeTab === 'mindmap' && (
-                                    <div className="py-10 flex flex-col items-center animate-in">
-                                        <h2 className="text-2xl font-black mb-12">構造化マップ</h2>
-                                        {minutes.mindmap && minutes.mindmap.length > 0 ? renderNodes(minutes.mindmap) : <p className="text-slate-400 font-bold">会話の流れをビジュアル化します</p>}
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-
-                        <footer className="h-[30rem] bg-white border-t p-6 flex flex-col shadow-[0_-20px_40px_rgba(0,0,0,0.04)] z-40 transition-all duration-300 shrink-0">
-                            <div className="flex items-center justify-between mb-4">
-                                <div className="flex items-center gap-2 text-indigo-600 font-black text-xs uppercase tracking-widest">
-                                    <Icon name="sparkles" size={16} /> 
-                                    AI Realtime Summary
-                                    {isAnalyzing && <span className="ml-2 inline-flex h-2 w-2 rounded-full bg-indigo-500 animate-ping"></span>}
-                                </div>
-                                <div className="text-[10px] font-bold text-slate-400 flex items-center gap-2 bg-slate-50 px-3 py-1 rounded-full">{lastUpdateTime ? `Updated: ${lastUpdateTime.toLocaleTimeString()}` : 'No Analysis Yet'}</div>
-                            </div>
-                            <div className="flex-1 bg-slate-50 rounded-2xl p-6 border border-slate-100 overflow-y-auto custom-scrollbar">
-                                <p className="text-lg font-bold text-slate-700 leading-relaxed italic">
-                                    {minutes.summary || "会話を始めると、AIが自動的に要約を開始します..."}
-                                </p>
-                            </div>
-                        </footer>
-                    </main>
-
-                    {showSettings && (
-                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-6 animate-in fade-in">
-                            <div className="bg-white rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden animate-in zoom-in-95">
-                                <div className="p-8 border-b flex justify-between items-center bg-slate-50/50">
-                                    <h2 className="text-2xl font-black flex items-center gap-3"><Icon name="settings" className="text-slate-400" /> 設定・テンプレート</h2>
-                                    <button onClick={() => setShowSettings(false)} className="p-2 hover:bg-white rounded-full transition-colors shadow-sm text-slate-400 hover:text-slate-900"><Icon name="x" size={24}/></button>
-                                </div>
-                                <div className="p-8 space-y-8 max-h-[80vh] overflow-y-auto custom-scrollbar">
-                                    
-                                    <section className="space-y-4">
-                                        <label className="text-[11px] font-black text-indigo-600 uppercase tracking-widest block">議事録テンプレート（Markdown）</label>
-                                        <p className="text-xs text-slate-500 mb-2">
-                                            AIが以下の変数を自動的に置換して議事録を構成します。<br/>
-                                            <code className="bg-slate-100 px-1 font-bold">{"{{title}}"}</code> 
-                                            <code className="bg-slate-100 px-1 font-bold ml-1">{"{{summary}}"}</code>
-                                            <code className="bg-slate-100 px-1 font-bold ml-1">{"{{actions}}"}</code>
-                                            <code className="bg-slate-100 px-1 font-bold ml-1">{"{{details}}"}</code>
-                                        </p>
-                                        <textarea 
-                                            value={template}
-                                            onChange={(e) => setTemplate(e.target.value)}
-                                            className="w-full h-48 bg-slate-50 border border-slate-200 rounded-2xl p-4 font-mono text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                                            placeholder="Markdown形式でテンプレートを入力..."
-                                        />
-                                        <button onClick={saveTemplate} className="px-4 py-2 bg-indigo-600 text-white text-xs font-bold rounded-xl hover:bg-indigo-700 transition-all flex items-center gap-2">
-                                            <Icon name="save" size={14}/> テンプレートを保存
-                                        </button>
-                                    </section>
-
-                                    <div className="grid grid-cols-2 gap-8">
-                                        <section className="space-y-4">
-                                            <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest block">Audio Device</label>
-                                            <select 
-                                                value={selectedDeviceId}
-                                                onChange={(e) => setSelectedDeviceId(e.target.value)}
-                                                className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                                            >
-                                                {devices.map(d => (
-                                                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Mic ${d.deviceId.slice(0, 5)}`}</option>
-                                                ))}
-                                            </select>
-                                        </section>
-
-                                        <section className="space-y-4">
-                                            <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest block">Meeting Genre</label>
-                                            <div className="grid grid-cols-2 gap-2">
-                                                {genres.map(g => (
-                                                    <button key={g.id} onClick={() => setGenre(g.id)} className={`p-3 rounded-xl border text-left transition-all ${genre === g.id ? 'border-indigo-600 bg-indigo-50 font-bold' : 'border-slate-100'}`}>
-                                                        <div className="text-[10px]">{g.label}</div>
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        </section>
-                                    </div>
-
-                                    <button onClick={() => setShowSettings(false)} className="w-full py-4 bg-slate-900 text-white font-black rounded-2xl hover:bg-slate-800 transition-colors shadow-xl">閉じる</button>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-                </div>
-            );
+<body class="bg-slate-950">
+    <div id="root" class="min-h-screen flex items-center justify-center text-slate-500">
+        <div class="text-center">
+            <p class="text-xl font-semibold mb-2">Loading...</p>
+            <p class="text-sm opacity-75">アプリケーションを起動しています</p>
+        </div>
+    </div>
+    <script>
+        window.onerror = function(message, source, lineno, colno, error) {
+            document.getElementById('root').innerHTML = '<div class="p-8 text-red-400 bg-slate-900 h-screen"><h1 class="text-2xl font-bold mb-4">エラーが発生しました</h1><pre class="bg-slate-950 p-4 rounded border border-red-900 overflow-auto">'+ message + '\n\n' + source + ':' + lineno + '</pre></div>';
         };
+    </script>
+    <script type="text/babel" data-type="module">
+import React, { useState, useEffect, useRef, useCallback } from 'https://esm.sh/react@18.2.0';
+import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
+import { 
+  Mic, 
+  MicOff, 
+  Download, 
+  Pause,
+  Play,
+  Clock, 
+  AlertCircle
+} from 'https://esm.sh/lucide-react@0.344.0?deps=react@18.2.0';
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
+const App = () => {
+  // State for recording and transcription
+  const [isRecording, setIsRecording] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [isMicActive, setIsMicActive] = useState(false); // マイクが物理的にONかどうか
+  const [transcriptions, setTranscriptions] = useState([]); // { text, time, id }
+  const [currentTranscript, setCurrentTranscript] = useState('');
+  const [error, setError] = useState(null);
+
+  // Refs for Speech Recognition
+  const recognitionRef = useRef(null);
+  const isRecordingRef = useRef(false); // イベントハンドラ内で最新のstateを参照するため
+  const isPausedRef = useRef(false);
+  const scrollRef = useRef(null);
+  const wakeLockRef = useRef(null);
+
+  // isRecordingの変更をRefに同期
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+    isPausedRef.current = isPaused;
+  }, [isRecording, isPaused]);
+
+  // Initialize Speech Recognition
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setError("お使いのブラウザは音声認識（Web Speech API）をサポートしていません。ChromeまたはEdgeをお試しください。");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'ja-JP';
+
+    recognition.onstart = () => setIsMicActive(true);
+    recognition.onend = () => {
+      setIsMicActive(false);
+      // 録音中（isRecordingがtrue）なのに終了した場合は、自動的に再開する
+      if (isRecordingRef.current) {
+        try {
+          recognition.start();
+        } catch (e) {
+          console.error("Failed to restart recognition:", e);
+        }
+      }
+    };
+
+    recognition.onresult = (event) => {
+      if (!isRecordingRef.current || isPausedRef.current) return; // 録音停止中または一時停止中は結果を無視する
+
+      let interim = '';
+      let final = '';
+
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          final += event.results[i][0].transcript;
+        } else {
+          interim += event.results[i][0].transcript;
+        }
+      }
+
+      if (final) {
+        const timestamp = new Date().toLocaleTimeString();
+        setTranscriptions(prev => [...prev, { text: final, time: timestamp, id: Date.now() }]);
+        setCurrentTranscript('');
+      } else {
+        setCurrentTranscript(interim);
+      }
+    };
+
+    recognition.onerror = (event) => {
+      console.error('Speech recognition error', event.error);
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        setError('マイクへのアクセスが拒否されたか、サービスが利用できません。');
+        setIsRecording(false); // 再開ループを防ぐために停止
+      }
+    };
+
+    recognitionRef.current = recognition;
+  }, []);
+
+  // Auto-scroll transcription list
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [transcriptions, currentTranscript]);
+
+  const toggleRecording = async () => {
+    if (isRecording) {
+      // 録音停止: マイクは切らずに、文字起こしの保存だけ止める
+      // recognitionRef.current?.stop(); 
+      setIsRecording(false);
+      setIsPaused(false);
+      
+      // Wake Lock 解除（画面スリープ防止を解除）
+      if (wakeLockRef.current) {
+        await wakeLockRef.current.release().catch(console.error);
+        wakeLockRef.current = null;
+      }
+    } else {
+      // 録音開始
+      setError(null);
+      setTranscriptions([]);
+      setIsRecording(true);
+      setIsPaused(false);
+      
+      // 画面のスリープを防ぐ (Wake Lock API)
+      if ('wakeLock' in navigator) {
+        wakeLockRef.current = await navigator.wakeLock.request('screen').catch(console.error);
+      }
+
+      // マイクがまだ起動していない場合のみ起動する
+      if (!isMicActive) {
+        recognitionRef.current?.start();
+      }
+    }
+  };
+
+  const togglePause = () => {
+    setIsPaused(!isPaused);
+  };
+
+  const exportDocument = () => {
+    const content = `
+# 会議文字起こしログ (${new Date().toLocaleDateString()})
+
+## 文字起こし全文
+${transcriptions.map(t => `[${t.time}] ${t.text}`).join('\n')}
+    `;
+
+    const blob = new Blob([content], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `transcription_${Date.now()}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 p-4 md:p-8 font-sans">
+      <header className="max-w-6xl mx-auto mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent flex items-center gap-2">
+            <Clock className="text-blue-400" />
+            Minutes Pro
+          </h1>
+          <p className="text-slate-400 mt-1">リアルタイム文字起こしツール</p>
+        </div>
+        
+        <div className="flex items-center gap-3">
+          {isRecording ? (
+            <>
+              <button
+                onClick={togglePause}
+                className={`flex items-center gap-2 px-6 py-3 rounded-full font-bold transition-all shadow-lg ${
+                  isPaused 
+                    ? 'bg-blue-600 hover:bg-blue-700' 
+                    : 'bg-yellow-500 hover:bg-yellow-600'
+                }`}
+              >
+                {isPaused ? <Play size={20} /> : <Pause size={20} />}
+                {isPaused ? '再開' : '一時停止'}
+              </button>
+              <button
+                onClick={toggleRecording}
+                className="flex items-center gap-2 px-6 py-3 rounded-full font-bold transition-all shadow-lg bg-red-500 hover:bg-red-600"
+              >
+                <MicOff size={20} />
+                終了
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={toggleRecording}
+              className="flex items-center gap-2 px-6 py-3 rounded-full font-bold transition-all shadow-lg bg-blue-600 hover:bg-blue-700"
+            >
+              <Mic size={20} />
+              録音開始
+            </button>
+          )}
+          
+          {transcriptions.length > 0 && (
+            <button
+              onClick={exportDocument}
+              className="flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-700 rounded-full font-bold transition-all"
+            >
+              <Download size={20} />
+              保存
+            </button>
+          )}
+        </div>
+      </header>
+
+      {error && (
+        <div className="max-w-6xl mx-auto mb-6 p-4 bg-red-900/30 border border-red-500/50 rounded-xl flex items-center gap-3 text-red-200">
+          <AlertCircle />
+          {error}
+        </div>
+      )}
+
+      <main className="max-w-4xl mx-auto">
+        
+        {/* Real-time Transcription Panel */}
+        <section className="flex flex-col gap-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col h-[600px] shadow-xl">
+            <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-800/50">
+              <h2 className="font-semibold flex items-center gap-2">
+                <Clock size={18} className="text-blue-400" />
+                リアルタイム文字起こし
+              </h2>
+              {isRecording && (
+                <span className={`flex items-center gap-2 text-xs ${isPaused ? 'text-yellow-400' : 'text-emerald-400'}`}>
+                  <span className={`w-2 h-2 rounded-full ${isPaused ? 'bg-yellow-400' : 'bg-emerald-400 animate-ping'}`} />
+                  {isPaused ? 'Paused' : 'Listening...'}
+                </span>
+              )}
+            </div>
+            
+            <div 
+              ref={scrollRef}
+              className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth"
+            >
+              {transcriptions.length === 0 && !currentTranscript && (
+                <div className="h-full flex flex-col items-center justify-center text-slate-500 opacity-50">
+                  <Mic size={48} className="mb-4" />
+                  <p>「録音開始」をクリックして、話し始めてください</p>
+                </div>
+              )}
+              
+              {transcriptions.map((t) => (
+                <div key={t.id} className="group flex gap-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                  <span className="text-xs text-slate-500 mt-1 font-mono shrink-0">
+                    {t.time}
+                  </span>
+                  <p className="text-slate-200 leading-relaxed bg-slate-800/30 p-2 rounded-lg group-hover:bg-slate-800/50 transition-colors">
+                    {t.text}
+                  </p>
+                </div>
+              ))}
+              
+              {currentTranscript && (
+                <div className="flex gap-4 opacity-70">
+                  <span className="text-xs text-slate-500 mt-1 font-mono shrink-0">
+                    ...
+                  </span>
+                  <p className="text-blue-300 italic p-2">{currentTranscript}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        {/* Stats / Info */}
+        <section className="mt-6">
+          <div className="bg-gradient-to-br from-blue-900/20 to-emerald-900/20 border border-blue-800/30 rounded-2xl p-6">
+            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">ステータス</h3>
+            <div className="grid grid-cols-1 gap-4">
+              <div>
+                <p className="text-2xl font-bold">{transcriptions.length}</p>
+                <p className="text-[10px] text-slate-500 uppercase">発話数</p>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer className="max-w-6xl mx-auto mt-12 pt-8 border-t border-slate-800 text-center text-slate-600 text-sm">
+        &copy; 2024 Minutes Pro. Powered by Web Speech API.
+      </footer>
+    </div>
+  );
+};
+
+const root = createRoot(document.getElementById('root'));
+root.render(<App />);
     </script>
 </body>
 </html>
