@@ -118,7 +118,7 @@ const App = () => {
   // Auto-scroll transcription list
   useEffect(() => {
     if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      scrollRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [transcriptions, currentTranscript]);
 
