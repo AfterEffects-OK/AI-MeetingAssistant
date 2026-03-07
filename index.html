@@ -58,6 +58,7 @@ const App = () => {
   const isPausedRef = useRef(false);
   const scrollRef = useRef(null);
   const wakeLockRef = useRef(null);
+  const silenceTimerRef = useRef(null);
 
   // isRecordingの変更をRefに同期
   useEffect(() => {
@@ -81,6 +82,7 @@ const App = () => {
     recognition.onstart = () => setIsMicActive(true);
     recognition.onend = () => {
       setIsMicActive(false);
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       // 録音中（isRecordingがtrue）なのに終了した場合は、自動的に再開する
       if (isRecordingRef.current) {
         try {
@@ -93,6 +95,9 @@ const App = () => {
 
     recognition.onresult = (event) => {
       if (!isRecordingRef.current || isPausedRef.current) return; // 録音停止中または一時停止中は結果を無視する
+
+      // 結果が返ってくるたびに無音タイマーをリセット
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
 
       let interim = '';
       let final = '';
@@ -111,6 +116,14 @@ const App = () => {
         setCurrentTranscript('');
       } else {
         setCurrentTranscript(interim);
+        
+        // 一時的な結果があり、かつ2秒間更新がなければ強制的に確定（再起動）させる
+        if (interim.trim().length > 0) {
+          silenceTimerRef.current = setTimeout(() => {
+            // stop()を呼ぶと、ブラウザは現在の認識結果を確定(final)として送出し、onendへ移行する
+            if (isRecordingRef.current && !isPausedRef.current) recognition.stop();
+          }, 2000);
+        }
       }
     };
 
@@ -138,6 +151,7 @@ const App = () => {
       // recognitionRef.current?.stop(); 
       setIsRecording(false);
       setIsPaused(false);
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       
       // Wake Lock 解除（画面スリープ防止を解除）
       if (wakeLockRef.current) {
