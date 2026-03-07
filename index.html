@@ -33,7 +33,8 @@ import {
   AlertCircle,
   Cloud,
   Settings,
-  Loader2
+  Loader2,
+  ExternalLink
 } from 'https://esm.sh/lucide-react@0.344.0?deps=react@18.2.0';
 
 const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzD_00xQa7yhByjXE6JkDkJbm4yumpl0KP1W5dKwKSvUHolvCR1Y2CNyKc5Kbx20eB6/exec";
@@ -49,6 +50,7 @@ const App = () => {
   
   // Google Drive Settings
   const [isUploading, setIsUploading] = useState(false);
+  const [savedUrl, setSavedUrl] = useState(null);
 
   // Refs for Speech Recognition
   const recognitionRef = useRef(null);
@@ -184,6 +186,7 @@ ${transcriptions.map(t => `[${t.time}] ${t.text}`).join('\n')}
 
   const handleGoogleDriveSave = async () => {
     setIsUploading(true);
+    setSavedUrl(null);
 
     try {
       const content = transcriptions.map(t => `[${t.time}] ${t.text}`).join('\n');
@@ -206,8 +209,7 @@ ${transcriptions.map(t => `[${t.time}] ${t.text}`).join('\n')}
       const result = await response.json();
       
       if (result.status === 'success') {
-        alert(`Google Driveに保存しました！\nURL: ${result.url}`);
-        // window.open(result.url, '_blank'); // 必要であれば自動で開く
+        setSavedUrl(result.url);
       } else {
         throw new Error(result.message || 'Unknown error');
       }
@@ -299,6 +301,21 @@ ${transcriptions.map(t => `[${t.time}] ${t.text}`).join('\n')}
 
       <main className="max-w-3xl mx-auto pt-24 pb-12 px-4">
         
+        {savedUrl && (
+          <div className="mb-6 p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-lg flex items-center justify-between gap-3 text-indigo-300 text-sm animate-in fade-in slide-in-from-top-2">
+            <div className="flex items-center gap-2 overflow-hidden">
+              <Cloud size={16} className="shrink-0" />
+              <span className="shrink-0">保存しました:</span>
+              <a href={savedUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 underline hover:text-indigo-200 truncate">
+                Googleドキュメントを開く <ExternalLink size={12} />
+              </a>
+            </div>
+            <button onClick={() => setSavedUrl(null)} className="p-1 hover:bg-indigo-500/20 rounded shrink-0">
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Real-time Transcription Panel */}
         <div className="flex flex-col gap-6">
           {transcriptions.length === 0 && !currentTranscript ? (
