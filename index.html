@@ -247,8 +247,17 @@ const App = () => {
       }
 
       if (final) {
+        // Android Chrome等での重複バグ対策: 空白のみの結果や、直前と完全に一致する結果を除外
+        const trimmedFinal = final.trim();
+        if (!trimmedFinal) return;
+
         const timestamp = new Date().toLocaleTimeString();
-        setTranscriptions(prev => [...prev, { text: final, time: timestamp, id: Date.now() }]);
+        setTranscriptions(prev => {
+          if (prev.length > 0 && prev[prev.length - 1].text === trimmedFinal) {
+            return prev;
+          }
+          return [...prev, { text: trimmedFinal, time: timestamp, id: Date.now() }];
+        });
         setCurrentTranscript('');
       } else {
         setCurrentTranscript(interim);
